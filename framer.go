@@ -22,6 +22,9 @@ type framer interface {
 	Handle0RTTRejection() error
 
 	HasRetransmission() bool
+	
+	// SetStreamFlowSize sets the expected flow size for a stream (for flow-size-based DRR)
+	SetStreamFlowSize(protocol.StreamID, uint64)
 }
 
 type framerI struct {
@@ -38,6 +41,12 @@ type framerI struct {
 	config         *Config
 	streamMapPrio map[protocol.StreamID]int //To match priorities with the stream ID
 	auxPriorSlice []int
+	
+	// DRR-specific fields
+	deficits     map[protocol.StreamID]int // Deficit counter for each stream
+	quantum      int                        // Default quantum value (bytes per round)
+	streamQuantums map[protocol.StreamID]int // Per-stream quantum (for flow-size-based DRR)
+	streamFlowSizes map[protocol.StreamID]uint64 // Expected flow size for each stream
 }
 
 var _ framer = &framerI{}
@@ -47,13 +56,59 @@ func newFramer(
 	v protocol.VersionNumber,
 	config *Config,
 ) framer {
-	return &framerI{
-		streamGetter:  streamGetter,
-		activeStreams: make(map[protocol.StreamID]struct{}),
-		version:       v,
-		streamMapPrio: make(map[protocol.StreamID]int),
-		config:		config,
+	quantum := 1200 // Default quantum: ~1 MSS
+	if config.DRRQuantum > 0 {
+		quantum = config.DRRQuantum
 	}
+	
+	return &framerI{
+		streamGetter:    streamGetter,
+		activeStreams:   make(map[protocol.StreamID]struct{}),
+		version:         v,
+		streamMapPrio:   make(map[protocol.StreamID]int),
+		config:          config,
+		deficits:        make(map[protocol.StreamID]int),
+		quantum:         quantum,
+		streamQuantums:  make(map[protocol.StreamID]int),
+		streamFlowSizes: make(map[protocol.StreamID]uint64),
+	}
+}
+
+// SetStreamFlowSize sets the expected flow size for a stream and assigns appropriate quantum
+func (f *framerI) SetStreamFlowSize(id protocol.StreamID, flowSize uint64) {
+	f.mutex.Lock()
+	defer f.mutex.Unlock()
+	
+	f.streamFlowSizes[id] = flowSize
+	
+	// If flow-size-based scheduling is configured, assign quantum based on flow size
+	if len(f.config.FlowSizeThresholds) > 0 && len(f.config.FlowSizeQuantums) > 0 {
+		quantum := f.getQuantumForFlowSize(flowSize)
+		f.streamQuantums[id] = quantum
+	}
+}
+
+// getQuantumForFlowSize returns the quantum for a given flow size based on thresholds
+// Small flows get higher quantum (higher priority), large flows get lower quantum (lower priority)
+func (f *framerI) getQuantumForFlowSize(flowSize uint64) int {
+	// Find the appropriate quantum based on flow size thresholds
+	for i, threshold := range f.config.FlowSizeThresholds {
+		if flowSize < threshold {
+			return f.config.FlowSizeQuantums[i]
+		}
+	}
+	// Flow size is larger than all thresholds, use last quantum (lowest priority)
+	return f.config.FlowSizeQuantums[len(f.config.FlowSizeQuantums)-1]
+}
+
+// getStreamQuantum returns the quantum for a given stream
+func (f *framerI) getStreamQuantum(id protocol.StreamID) int {
+	// If per-stream quantum is set (flow-size-based), use it
+	if quantum, ok := f.streamQuantums[id]; ok {
+		return quantum
+	}
+	// Otherwise use default quantum
+	return f.quantum
 }
 
 func (f *framerI) HasData() bool {
@@ -159,6 +214,11 @@ func (f *framerI) AddActiveStream(id protocol.StreamID) {
 
 		case "rr": // stream ID has already been added
 
+		case "drr": // Deficit Round Robin - stream ID has been added, initialize deficit to 0
+			if _, ok := f.deficits[id]; !ok {
+				f.deficits[id] = 0
+			}
+
 		default:
 		}
 	}
@@ -170,6 +230,91 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 	var lastFrame *ackhandler.Frame
 	f.mutex.Lock()
 
+	// DRR implementation with flow-size-based quantum assignment
+	if f.config.TypePrio == "drr" {
+		numActiveStreams := len(f.streamQueue)
+		processedStreams := 0
+		
+		for processedStreams < numActiveStreams {
+			if protocol.MinStreamFrameSize+length > maxLen || len(f.streamQueue) == 0 {
+				break
+			}
+			
+			id := f.streamQueue[0]
+			f.streamQueue = f.streamQueue[1:]
+			processedStreams++
+			
+			// Get the quantum for this stream (either flow-size-based or default)
+			streamQuantum := f.getStreamQuantum(id)
+			
+			// Add quantum to deficit for this stream
+			f.deficits[id] += streamQuantum
+			
+			// Get the stream
+			str, err := f.streamGetter.GetOrOpenSendStream(id)
+			if str == nil || err != nil {
+				delete(f.activeStreams, id)
+				delete(f.deficits, id)
+				delete(f.streamQuantums, id)
+				delete(f.streamFlowSizes, id)
+				continue
+			}
+			
+			// Try to send frames while deficit > 0
+			sentInThisRound := false
+			for f.deficits[id] > 0 {
+				if protocol.MinStreamFrameSize+length > maxLen {
+					break
+				}
+				
+				remainingLen := maxLen - length
+				remainingLen += quicvarint.Len(uint64(remainingLen))
+				
+				// Limit by deficit - only request as much as we have credit for
+				if int(remainingLen) > f.deficits[id] {
+					remainingLen = protocol.ByteCount(f.deficits[id])
+				}
+				
+				frame, hasMoreData := str.popStreamFrame(remainingLen)
+				
+				if frame == nil {
+					break
+				}
+				
+				frameLength := frame.Length(f.version)
+				
+				frames = append(frames, *frame)
+				length += frameLength
+				lastFrame = frame
+				f.deficits[id] -= int(frameLength)
+				sentInThisRound = true
+				
+				if !hasMoreData {
+					// Stream has no more data
+					delete(f.activeStreams, id)
+					delete(f.deficits, id)
+					delete(f.streamQuantums, id)
+					delete(f.streamFlowSizes, id)
+					break
+				}
+			}
+			
+			// If stream still has data, put it back in queue
+			if _, stillActive := f.activeStreams[id]; stillActive {
+				f.streamQueue = append(f.streamQueue, id)
+			}
+		}
+		
+		f.mutex.Unlock()
+		if lastFrame != nil {
+			lastFrameLen := lastFrame.Length(f.version)
+			lastFrame.Frame.(*wire.StreamFrame).DataLenPresent = false
+			length += lastFrame.Length(f.version) - lastFrameLen
+		}
+		return frames, length
+	}
+
+	// Original implementation for non-DRR schedulers
 	// pop STREAM frames, until less than MinStreamFrameSize bytes are left in the packet
 	numActiveStreams := len(f.streamQueue)
 	for i := 0; i < numActiveStreams; i++ {
@@ -260,6 +405,16 @@ func (f *framerI) Handle0RTTRejection() error {
 	f.streamQueue = f.streamQueue[:0]
 	for id := range f.activeStreams {
 		delete(f.activeStreams, id)
+	}
+	// Clean up DRR deficits and flow-size metadata
+	for id := range f.deficits {
+		delete(f.deficits, id)
+	}
+	for id := range f.streamQuantums {
+		delete(f.streamQuantums, id)
+	}
+	for id := range f.streamFlowSizes {
+		delete(f.streamFlowSizes, id)
 	}
 	var j int
 	for i, frame := range f.controlFrames {

@@ -29,6 +29,26 @@ func validateConfig(config *Config) error {
 	if config.MaxIncomingUniStreams > 1<<60 {
 		return errors.New("invalid value for Config.MaxIncomingUniStreams")
 	}
+	// Validate TypePrio if set
+	if config.TypePrio != "" {
+		validTypes := map[string]bool{
+			"abs": true,
+			"wfq": true,
+			"rr":  true,
+			"drr": true,
+		}
+		if !validTypes[config.TypePrio] {
+			return errors.New("invalid value for Config.TypePrio: must be one of 'abs', 'wfq', 'rr', or 'drr'")
+		}
+	}
+	// Validate DRRQuantum if DRR is enabled
+	if config.TypePrio == "drr" && config.DRRQuantum < 0 {
+		return errors.New("invalid value for Config.DRRQuantum: must be non-negative")
+	}
+	// Validate FlowSizeThresholds if set
+	if len(config.FlowSizeThresholds) > 0 && len(config.FlowSizeQuantums) != len(config.FlowSizeThresholds)+1 {
+		return errors.New("Config.FlowSizeQuantums must have exactly one more element than FlowSizeThresholds")
+	}
 	return nil
 }
 
@@ -120,7 +140,10 @@ func populateConfig(config *Config) *Config {
 		DisableVersionNegotiationPackets: config.DisableVersionNegotiationPackets,
 		EnableDatagrams:                  config.EnableDatagrams,
 		Tracer:                           config.Tracer,
-		StreamPrio:                      config.StreamPrio,
+		StreamPrio:                       config.StreamPrio,
 		TypePrio: 						  config.TypePrio,
+		DRRQuantum:                       config.DRRQuantum,
+		FlowSizeThresholds:               config.FlowSizeThresholds,
+		FlowSizeQuantums:                 config.FlowSizeQuantums,
 	}
 }

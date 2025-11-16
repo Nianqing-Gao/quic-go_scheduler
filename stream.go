@@ -82,6 +82,9 @@ type stream struct {
 	sendStreamCompleted    bool
 
 	version protocol.VersionNumber
+	
+	// Flow size for scheduling
+	flowSize int
 }
 
 var _ Stream = &stream{}
@@ -146,4 +149,19 @@ func (s *stream) checkIfCompleted() {
 	if s.sendStreamCompleted && s.receiveStreamCompleted {
 		s.sender.onStreamCompleted(s.StreamID())
 	}
+}
+
+// SetFlowSize allows the application to annotate the expected size of this flow
+// This enables flow-size-based scheduling optimizations in the DRR scheduler
+func (s *stream) SetFlowSize(sizeInBytes int) error {
+	if sizeInBytes < 0 {
+		return errors.New("flow size must be non-negative")
+	}
+	s.flowSize = sizeInBytes
+	return nil
+}
+
+// GetFlowSize returns the annotated flow size, or 0 if not set
+func (s *stream) GetFlowSize() int {
+	return s.flowSize
 }

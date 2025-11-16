@@ -307,8 +307,15 @@ type Config struct {
 
 	//SCHEDULER: StreamPrior defines the weight given to each stream.
 	StreamPrio []int
-	//SCHEDULER: TypePrior defines the type of the priority scheduler--> abs: absolute priorities, wfq: weighted priorities, rr: round robin
+	//SCHEDULER: TypePrior defines the type of the priority scheduler--> abs: absolute priorities, wfq: weighted priorities, rr: round robin, drr: deficit round robin
 	TypePrio string
+	//SCHEDULER: DRR Quantum defines the number of bytes (credit) each stream receives per round in DRR scheduling.
+	// If not set, defaults to 1200 bytes (approximately 1 MSS).
+	// This value can be tuned based on expected packet sizes and fairness requirements.
+	DRRQuantum int
+	// If FlowSizes is nil or a stream ID is not in the map, the stream
+	// uses the default DRRQuantum value.
+	FlowSizes map[protocol.StreamID]int
 }
 
 // ConnectionState records basic details about a QUIC connection
