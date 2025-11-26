@@ -1,6 +1,7 @@
 package quic
 
 import (
+	"errors"
 	"net"
 	"os"
 	"sync"

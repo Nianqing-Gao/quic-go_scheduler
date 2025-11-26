@@ -316,6 +316,10 @@ type Config struct {
 	// If FlowSizes is nil or a stream ID is not in the map, the stream
 	// uses the default DRRQuantum value.
 	FlowSizes map[protocol.StreamID]int
+
+	FlowSizeThresholds []int
+	
+    FlowSizeQuantums   []int
 }
 
 // ConnectionState records basic details about a QUIC connection

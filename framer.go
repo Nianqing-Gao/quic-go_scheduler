@@ -93,7 +93,7 @@ func (f *framerI) SetStreamFlowSize(id protocol.StreamID, flowSize uint64) {
 func (f *framerI) getQuantumForFlowSize(flowSize uint64) int {
 	// Find the appropriate quantum based on flow size thresholds
 	for i, threshold := range f.config.FlowSizeThresholds {
-		if flowSize < threshold {
+		if flowSize < uint64(threshold) {
 			return f.config.FlowSizeQuantums[i]
 		}
 	}
@@ -261,7 +261,7 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 			}
 			
 			// Try to send frames while deficit > 0
-			sentInThisRound := false
+			// sentInThisRound := false
 			for f.deficits[id] > 0 {
 				if protocol.MinStreamFrameSize+length > maxLen {
 					break
@@ -287,7 +287,7 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 				length += frameLength
 				lastFrame = frame
 				f.deficits[id] -= int(frameLength)
-				sentInThisRound = true
+				// sentInThisRound = true
 				
 				if !hasMoreData {
 					// Stream has no more data
