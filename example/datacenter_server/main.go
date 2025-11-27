@@ -37,13 +37,13 @@ func main() {
     ip := flag.String("ip", "0.0.0.0:4242", "IP:port to listen on")
     scheduler := flag.String("scheduler", "drr", "scheduler type: rr, wfq, abs, drr")
     logFile := flag.String("logfile", "/logs/scts.csv", "CSV log file path inside container")
-    shortSizeFlag := flag.Int("shortSize", 100*1024, "short flow size threshold in bytes")
-    longSizeFlag := flag.Int("longSize", 10*1024*1024, "long flow size threshold in bytes")
+    shortSize := flag.Int("shortSize", 100*1024, "short flow size threshold in bytes")
+    longSize := flag.Int("longSize", 10*1024*1024, "long flow size threshold in bytes")
     flag.Parse()
 
     schedulerName = *scheduler
-    shortThresh = *shortSizeFlag
-    longThresh = *longSizeFlag
+    shortThresh = *shortSize
+    longThresh = *longSize
 
     // log file
     f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
@@ -66,7 +66,7 @@ func main() {
     quicConfig := &quic.Config{
         AcceptToken:          AcceptToken,
         TypePrio:             *scheduler,
-        FlowSizeThresholds:   []int{*shortSizeFlag, *longSizeFlag},
+        FlowSizeThresholds:   []int{*shortSize, *longSize},
         FlowSizeQuantums:     []int{6 * 1200, 3 * 1200, 1 * 1200},
     }
 

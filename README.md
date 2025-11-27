@@ -15,7 +15,7 @@ go run ./example/datacenter_server \
     -longSize=10000000 \
     -logfile=./scts_local.csv
 ```
-then run the client:
+then run the client in another terminal:
 ```bash
 go run ./example/datacenter_client \
     -ip 127.0.0.1:4242 \
