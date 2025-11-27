@@ -16,5 +16,5 @@ fuzzing/*/corpus/
 
 gomock_reflect_*/
 
-.csv
+*.csv
 datacenter_server
