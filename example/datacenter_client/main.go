@@ -14,6 +14,8 @@ import (
 )
 
 func main() {
+
+    // flag name, default value, description
     keyLogFile := flag.String("keylog", "", "key log file (optional)")
     ip := flag.String("ip", "localhost:4242", "server IP:port")
     nflows := flag.Int("nflows", 100, "total number of flows (streams)")
@@ -24,23 +26,22 @@ func main() {
     scheduler := flag.String("scheduler", "drr", "scheduler type: rr, wfq, abs, drr")
     flag.Parse()
 
-    rand.Seed(time.Now().UnixNano())
+    rand.Seed(time.Now().UnixNano())           // for randomizing flow class
 
-    // QUIC config
+    // quic configurations
     quicConfig := &quic.Config{
-        DisablePathMTUDiscovery: true,
-        TypePrio:                *scheduler,
 
-        FlowSizeThresholds: []int{*shortSize, *longSize},
-        FlowSizeQuantums:   []int{6 * 1200, 3 * 1200, 1 * 1200},
+        DisablePathMTUDiscovery: true,                      // disable MTU discovery
+        TypePrio:                *scheduler,                // 
+        FlowSizeThresholds: []int{*shortSize, *longSize},   // length class thresholds
+        FlowSizeQuantums:   []int{6*1200, 3*1200, 1*1200},  // quantum each class gets per round
     }
-
-    // TLS config
+    // TLS configurations
     tlsConf := &tls.Config{
-        InsecureSkipVerify: true,
-        NextProtos:         []string{"dctr-drr"},
+        InsecureSkipVerify: true,                           // client does not verify server cert
+        NextProtos:         []string{"dctr-drr"},           // client & server shared protocol
     }
-
+    // key log file 
     if *keyLogFile != "" {
         f, err := os.Create(*keyLogFile)
         if err != nil {
@@ -50,77 +51,87 @@ func main() {
         tlsConf.KeyLogWriter = f
     }
 
-    // QUIC connection
+    // establish quic connection session to server at *ip using tlsConf and quicConf
     sess, err := quic.DialAddr(*ip, tlsConf, quicConfig)
     if err != nil {
         log.Fatalf("DialAddr error: %v", err)
     }
+    // close session when done
     defer sess.CloseWithError(0, "done")
     log.Printf("[client] connected to %s (scheduler=%s)", *ip, *scheduler)
 
-    // Pre-generate flow sizes: 80% short, 20% long
+    // generate randomized flow size and class accordingly (80% short, 20% long)
     sizes := make([]int, *nflows)
-    types := make([]string, *nflows)
+    class := make([]string, *nflows)
     for i := 0; i < *nflows; i++ {
         if rand.Float64() < *shortFrac {
             sizes[i] = *shortSize
-            types[i] = "short"
+            class[i] = "short"
         } else {
             sizes[i] = *longSize
-            types[i] = "long"
+            class[i] = "long"
         }
     }
 
-    // Limit concurrency
+    // limit concurrency with semaphore
+    // only concurrency number of goroutines can use the channel
     sem := make(chan struct{}, *concurrency)
     var wg sync.WaitGroup
 
+    // start a goroutine for each flow 
     for i := 0; i < *nflows; i++ {
         wg.Add(1)
         sem <- struct{}{}
         go func(id int, size int, class string) {
-            defer wg.Done()
-            defer func() { <-sem }()
-
+            defer wg.Done()           // mark goroutine as done
+            defer func() { <-sem }()  // release semaphore
             if err := runOneFlow(sess, id, size, class); err != nil {
                 log.Printf("[client] flow %d (%s) error: %v", id, class, err)
             }
-        }(i, sizes[i], types[i])
+        }(i, sizes[i], class[i])
     }
-
+    // wait for all flows to complete
     wg.Wait()
-    log.Printf("[client] all flows completed")
+    log.Printf("[client] all streams completed")
 }
 
+/*
+ * open a single quic stream on the existing connection,
+ * log the flow completion time
+ * - size: number of bytes to send
+ * - class: short, medium, long
+ */
 func runOneFlow(sess quic.Connection, flowID int, size int, class string) error {
+    // open one stream 
     stream, err := sess.OpenStreamSync(context.Background())
     if err != nil {
         return fmt.Errorf("OpenStreamSync: %w", err)
     }
+    // close stream when done
     defer stream.Close()
-
+    // allocate write buffer
     buf := make([]byte, 32*1024)
     remaining := size
-    start := time.Now()
 
+    start := time.Now()
     for remaining > 0 {
-        chunk := len(buf)
-        if remaining < chunk {
-            chunk = remaining
+        // decide how many bytes to send in this iteration
+        // either send full buffer or whatever's left
+        send := len(buf)
+        if remaining < send {
+            send = remaining
         }
-        n, err := stream.Write(buf[:chunk])
+        // write "send" bytes to stream 
+        n, err := stream.Write(buf[:send])
         if err != nil {
             return fmt.Errorf("Write: %w", err)
         }
         remaining -= n
     }
 
-    if err := stream.Close(); err != nil {
-        return fmt.Errorf("Close: %w", err)
-    }
-
-    fct := time.Since(start)
-    log.Printf("[client] flow %d (%s) complete: bytes=%d fct_ms=%.2f",
-        flowID, class, size, float64(fct.Milliseconds()))
+    sct := time.Since(start)
+    log.Printf("[client] flow %d (%s) complete: bytes=%d sct_ms=%.2f",
+        flowID, class, size, float64(sct.Milliseconds()))
+        
     return nil
 }
