@@ -39,6 +39,9 @@ func main() {
     logFile := flag.String("logfile", "/logs/scts.csv", "CSV log file path inside container")
     shortSize := flag.Int("shortSize", 100*1024, "short flow size threshold in bytes")
     longSize := flag.Int("longSize", 10*1024*1024, "long flow size threshold in bytes")
+    quantum0 := flag.Int("quantum0", 6*1200, "quantum for class 0 (short flows)")
+    quantum1 := flag.Int("quantum1", 3*1200, "quantum for class 1 (medium flows)")
+    quantum2 := flag.Int("quantum2", 1*1200, "quantum for class 2 (long flows)")
     flag.Parse()
 
     schedulerName = *scheduler
@@ -67,7 +70,7 @@ func main() {
         AcceptToken:          AcceptToken,
         TypePrio:             *scheduler,
         FlowSizeThresholds:   []int{*shortSize, *longSize},
-        FlowSizeQuantums:     []int{6 * 1200, 3 * 1200, 1 * 1200},
+        FlowSizeQuantums:   []int{*quantum0, *quantum1, *quantum2},
     }
 
     // start a quic listener on ip:port 
