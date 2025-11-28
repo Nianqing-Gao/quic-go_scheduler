@@ -24,6 +24,7 @@ go run ./example/datacenter_client \
     -shortSize=100000 \
     -longSize=10000000 \
     -concurrency=10 \
-    -scheduler=drr
+    -scheduler=drr \
+    -duration=10s
 ```
 log info should be printed on the terminal and also in the log file. 

@@ -16,6 +16,7 @@ import (
 func main() {
 
     // flag name, default value, description
+    duration := flag.Duration("duration", 0, "optional total run time (e.g. 5m, 300s); 0 = run until all flows finish")
     keyLogFile := flag.String("keylog", "", "key log file (optional)")
     ip := flag.String("ip", "localhost:4242", "server IP:port")
     nflows := flag.Int("nflows", 100, "total number of flows (streams)")
@@ -78,8 +79,16 @@ func main() {
     sem := make(chan struct{}, *concurrency)
     var wg sync.WaitGroup
 
+    startAll := time.Now()
+
     // start a goroutine for each flow 
     for i := 0; i < *nflows; i++ {
+        // duration check
+        if *duration > 0 && time.Since(startAll) > *duration {
+            log.Printf("[client] duration limit hit - not starting flow %d and beyond", i)
+            break
+        }
+
         wg.Add(1)
         sem <- struct{}{}
         go func(id int, size int, class string) {
@@ -130,7 +139,7 @@ func runOneFlow(sess quic.Connection, flowID int, size int, class string) error 
     }
 
     sct := time.Since(start)
-    log.Printf("[client] flow %d (%s) complete: bytes=%d sct_ms=%.2f",
+    log.Printf("[client] stream %d (%s) complete: bytes=%d sct_ms=%.2f",
         flowID, class, size, float64(sct.Milliseconds()))
         
     return nil
