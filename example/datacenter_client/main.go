@@ -25,6 +25,9 @@ func main() {
     longSize := flag.Int("longSize", 10*1024*1024, "size of long flows in bytes")
     concurrency := flag.Int("concurrency", 10, "max concurrent streams")
     scheduler := flag.String("scheduler", "drr", "scheduler type: rr, wfq, abs, drr")
+	quantum0 := flag.Int("quantum0", 6*1200, "quantum for class 0 (short flows)")
+    quantum1 := flag.Int("quantum1", 3*1200, "quantum for class 1 (medium flows)")
+    quantum2 := flag.Int("quantum2", 1*1200, "quantum for class 2 (long flows)")
     flag.Parse()
 
     rand.Seed(time.Now().UnixNano())           // for randomizing flow class
@@ -35,7 +38,7 @@ func main() {
         DisablePathMTUDiscovery: true,                      // disable MTU discovery
         TypePrio:                *scheduler,                // 
         FlowSizeThresholds: []int{*shortSize, *longSize},   // length class thresholds
-        FlowSizeQuantums:   []int{6*1200, 3*1200, 1*1200},  // quantum each class gets per round
+        FlowSizeQuantums:   []int{*quantum0, *quantum1, *quantum2},  // quantum each class gets per round
     }
     // TLS configurations
     tlsConf := &tls.Config{
