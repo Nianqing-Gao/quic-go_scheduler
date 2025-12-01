@@ -71,6 +71,8 @@ func main() {
         TypePrio:             *scheduler,
         FlowSizeThresholds:   []int{*shortSize, *longSize},
         FlowSizeQuantums:   []int{*quantum0, *quantum1, *quantum2},
+        MaxIdleTimeout: 3 * time.Minute, 
+        MaxIncomingStreams:   100000,
     }
 
     // start a quic listener on ip:port 
