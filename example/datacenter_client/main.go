@@ -20,7 +20,7 @@ func main() {
     duration := flag.Duration("duration", 0, "optional total run time (e.g. 5m, 300s); 0 = run until all flows finish")
     keyLogFile := flag.String("keylog", "", "key log file (optional)")
     ip := flag.String("ip", "localhost:4242", "server IP:port")
-    nflows := flag.Int("nflows", 100, "total number of flows (streams)")
+    nflows := flag.Int("nflows", 1000, "total number of flows (streams)")
     minSize := flag.Int("minSize", 2*1024, "minimum flow size in bytes (default: 2KB)")
     maxSize := flag.Int("maxSize", 11*1024*1024, "maximum flow size in bytes (default: 1.1MB)")
     shortFrac := flag.Float64("shortFrac", 0.9, "fraction of short flows")
