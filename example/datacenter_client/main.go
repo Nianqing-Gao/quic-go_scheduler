@@ -21,8 +21,8 @@ func main() {
     keyLogFile := flag.String("keylog", "", "key log file (optional)")
     ip := flag.String("ip", "localhost:4242", "server IP:port")
     nflows := flag.Int("nflows", 100, "total number of flows (streams)")
-    minSize := flag.Int("minSize", 20*1024, "minimum flow size in bytes (default: 20KB)")
-    maxSize := flag.Int("maxSize", 1000*1024*1024, "maximum flow size in bytes (default: 100MB)")
+    minSize := flag.Int("minSize", 2*1024, "minimum flow size in bytes (default: 2KB)")
+    maxSize := flag.Int("maxSize", 11*1024*1024, "maximum flow size in bytes (default: 1.1MB)")
     shortFrac := flag.Float64("shortFrac", 0.9, "fraction of short flows")
     shortSize := flag.Int("shortSize", 100*1024, "size of short flows in bytes (anything below 1MB)")
     longSize := flag.Int("longSize", 10*1024*1024, "size of long flows in bytes (anything beyond 1MB)")
@@ -154,7 +154,6 @@ func max(a, b int) int {
 
 /*
  * open a single quic stream on the existing connection,
- * log the flow completion time
  * - size: number of bytes to send
  * - class: short, medium, long
  */
@@ -170,7 +169,7 @@ func runOneFlow(sess quic.Connection, flowID int, size int, class string) error 
     buf := make([]byte, 32*1024)
     remaining := size
 
-    start := time.Now()
+    // start := time.Now()
     for remaining > 0 {
         // decide how many bytes to send in this iteration
         // either send full buffer or whatever's left
@@ -186,9 +185,9 @@ func runOneFlow(sess quic.Connection, flowID int, size int, class string) error 
         remaining -= n
     }
 
-    sct := time.Since(start)
-    log.Printf("[client] stream %d (%s) complete: bytes=%d sct_ms=%.2f",
-        flowID, class, size, float64(sct.Milliseconds()))
+    // sct := time.Since(start)
+    // log.Printf("[client] stream %d (%s) complete: bytes=%d sct_ms=%.2f",
+    //     flowID, class, size, float64(sct.Milliseconds()))
         
     return nil
 }
