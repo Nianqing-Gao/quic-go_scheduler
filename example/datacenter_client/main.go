@@ -11,6 +11,7 @@ import (
     "sync"
     "time"
 	"os"
+    "math"
 )
 
 func main() {
@@ -20,9 +21,11 @@ func main() {
     keyLogFile := flag.String("keylog", "", "key log file (optional)")
     ip := flag.String("ip", "localhost:4242", "server IP:port")
     nflows := flag.Int("nflows", 100, "total number of flows (streams)")
-    shortFrac := flag.Float64("shortFrac", 0.8, "fraction of short flows")
-    shortSize := flag.Int("shortSize", 100*1024, "size of short flows in bytes")
-    longSize := flag.Int("longSize", 10*1024*1024, "size of long flows in bytes")
+    minSize := flag.Int("minSize", 20*1024, "minimum flow size in bytes (default: 20KB)")
+    maxSize := flag.Int("maxSize", 1000*1024*1024, "maximum flow size in bytes (default: 100MB)")
+    shortFrac := flag.Float64("shortFrac", 0.9, "fraction of short flows")
+    shortSize := flag.Int("shortSize", 100*1024, "size of short flows in bytes (anything below 1MB)")
+    longSize := flag.Int("longSize", 10*1024*1024, "size of long flows in bytes (anything beyond 1MB)")
     concurrency := flag.Int("concurrency", 10, "max concurrent streams")
     scheduler := flag.String("scheduler", "drr", "scheduler type: rr, wfq, abs, drr")
 	quantum0 := flag.Int("quantum0", 6*1200, "quantum for class 0 (short flows)")
@@ -64,16 +67,32 @@ func main() {
     defer sess.CloseWithError(0, "done")
     log.Printf("[client] connected to %s (scheduler=%s)", *ip, *scheduler)
 
-    // generate randomized flow size and class accordingly (80% short, 20% long)
+    // generate randomized flow size and class
     sizes := make([]int, *nflows)
-    class := make([]string, *nflows)
+    classes := make([]string, *nflows)
+    shortCount, medCount, longCount := 0, 0, 0
+
     for i := 0; i < *nflows; i++ {
-        if rand.Float64() < *shortFrac {
-            sizes[i] = *shortSize
-            class[i] = "short"
+        u := rand.Float64()
+        var size int
+        if u < *shortFrac {
+            // short flows: draw between [minSize, shortSize)
+            size = sampleLogUniform(*minSize, max(1, *shortSize-1))
         } else {
-            sizes[i] = *longSize
-            class[i] = "long"
+            // the rest: draw between [shortSize, maxSize]
+            size = sampleLogUniform(*shortSize, *maxSize)
+        }
+        sizes[i] = size
+        // classify based on thresholds
+        if size < *shortSize {
+            classes[i] = "short"
+            shortCount++
+        } else if size < *longSize {
+            classes[i] = "medium"
+            medCount++
+        } else {
+            classes[i] = "long"
+            longCount++
         }
     }
 
@@ -100,11 +119,37 @@ func main() {
             if err := runOneFlow(sess, id, size, class); err != nil {
                 log.Printf("[client] flow %d (%s) error: %v", id, class, err)
             }
-        }(i, sizes[i], class[i])
+        }(i, sizes[i], classes[i])
     }
     // wait for all flows to complete
     wg.Wait()
     log.Printf("[client] all streams completed")
+}
+
+/*
+ * helper function for generating synthetic data
+ */
+func sampleLogUniform(minSize, maxSize int) int {
+    if minSize <= 0 {
+        minSize = 1
+    }
+    if maxSize <= minSize {
+        return minSize
+    }
+    logMin := math.Log(float64(minSize))
+    logMax := math.Log(float64(maxSize))
+    u := rand.Float64()
+    v := logMin + u*(logMax-logMin)
+    return int(math.Exp(v))
+}
+/*
+ * helper function for generating synthetic data
+ */
+func max(a, b int) int {
+    if a > b {
+        return a
+    }
+    return b
 }
 
 /*
