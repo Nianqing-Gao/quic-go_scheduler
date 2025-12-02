@@ -10,7 +10,7 @@ import (
     "math/rand"
     "sync"
     "time"
-	"os"
+    "os"
     "math"
 )
 
@@ -28,44 +28,12 @@ func main() {
     longSize := flag.Int("longSize", 10*1024*1024, "size of long flows in bytes (anything beyond 1MB)")
     concurrency := flag.Int("concurrency", 10, "max concurrent streams")
     scheduler := flag.String("scheduler", "drr", "scheduler type: rr, wfq, abs, drr")
-	quantum0 := flag.Int("quantum0", 6*1200, "quantum for class 0 (short flows)")
+    quantum0 := flag.Int("quantum0", 6*1200, "quantum for class 0 (short flows)")
     quantum1 := flag.Int("quantum1", 3*1200, "quantum for class 1 (medium flows)")
     quantum2 := flag.Int("quantum2", 1*1200, "quantum for class 2 (long flows)")
     flag.Parse()
 
     rand.Seed(time.Now().UnixNano())           // for randomizing flow class
-
-    // quic configurations
-    quicConfig := &quic.Config{
-
-        DisablePathMTUDiscovery: true,                      // disable MTU discovery
-        TypePrio:                *scheduler,                // 
-        FlowSizeThresholds: []int{*shortSize, *longSize},   // length class thresholds
-        FlowSizeQuantums:   []int{*quantum0, *quantum1, *quantum2},  // quantum each class gets per round
-    }
-    // TLS configurations
-    tlsConf := &tls.Config{
-        InsecureSkipVerify: true,                           // client does not verify server cert
-        NextProtos:         []string{"dctr-drr"},           // client & server shared protocol
-    }
-    // key log file 
-    if *keyLogFile != "" {
-        f, err := os.Create(*keyLogFile)
-        if err != nil {
-            log.Fatalf("keylog create: %v", err)
-        }
-        defer f.Close()
-        tlsConf.KeyLogWriter = f
-    }
-
-    // establish quic connection session to server at *ip using tlsConf and quicConf
-    sess, err := quic.DialAddr(*ip, tlsConf, quicConfig)
-    if err != nil {
-        log.Fatalf("DialAddr error: %v", err)
-    }
-    // close session when done
-    defer sess.CloseWithError(0, "done")
-    log.Printf("[client] connected to %s (scheduler=%s)", *ip, *scheduler)
 
     // generate randomized flow size and class
     sizes := make([]int, *nflows)
@@ -95,6 +63,56 @@ func main() {
             longCount++
         }
     }
+    _ = shortCount
+    _ = medCount
+    _ = longCount
+
+    // quic configurations
+    quicConfig := &quic.Config{
+
+        DisablePathMTUDiscovery: true,                      // disable MTU discovery
+        TypePrio:                *scheduler,                // 
+        FlowSizeThresholds: []int{*shortSize, *longSize},   // length class thresholds
+        FlowSizeQuantums:   []int{*quantum0, *quantum1, *quantum2},  // quantum each class gets per round
+    }
+    // TLS configurations
+    tlsConf := &tls.Config{
+        InsecureSkipVerify: true,                           // client does not verify server cert
+        NextProtos:         []string{"dctr-drr"},           // client & server shared protocol
+    }
+    // key log file 
+    if *keyLogFile != "" {
+        f, err := os.Create(*keyLogFile)
+        if err != nil {
+            log.Fatalf("keylog create: %v", err)
+        }
+        defer f.Close()
+        tlsConf.KeyLogWriter = f
+    }
+
+    if *scheduler == "wfq" || *scheduler == "abs" {
+        streamPrio := make([]int, *nflows)
+        for i := 0; i < *nflows; i++ {
+            switch classes[i] {
+            case "short":
+                streamPrio[i] = 3  // highest
+            case "medium":
+                streamPrio[i] = 2
+            case "long":
+                streamPrio[i] = 1  // lowest
+            }
+        }
+        quicConfig.StreamPrio = streamPrio
+    }
+
+    // establish quic connection session to server at *ip using tlsConf and quicConf
+    sess, err := quic.DialAddr(*ip, tlsConf, quicConfig)
+    if err != nil {
+        log.Fatalf("DialAddr error: %v", err)
+    }
+    // close session when done
+    defer sess.CloseWithError(0, "done")
+    log.Printf("[client] connected to %s (scheduler=%s)", *ip, *scheduler)
 
     // limit concurrency with semaphore
     // only concurrency number of goroutines can use the channel
