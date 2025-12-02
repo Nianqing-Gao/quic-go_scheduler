@@ -81,10 +81,13 @@ func (f *framerI) SetStreamFlowSize(id protocol.StreamID, flowSize uint64) {
 	
 	f.streamFlowSizes[id] = flowSize
 	
-	// If flow-size-based scheduling is configured, assign quantum based on flow size
 	if len(f.config.FlowSizeThresholds) > 0 && len(f.config.FlowSizeQuantums) > 0 {
 		quantum := f.getQuantumForFlowSize(flowSize)
 		f.streamQuantums[id] = quantum
+		fmt.Printf("[FRAMER] Stream %d: flowSize=%d quantum=%d thresholds=%v\n", 
+			id, flowSize, quantum, f.config.FlowSizeThresholds)  // ADD THIS
+	} else {
+		fmt.Printf("[FRAMER] Stream %d: NO thresholds/quantums configured!\n", id)  // ADD THIS
 	}
 }
 
@@ -246,6 +249,8 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 			
 			// Get the quantum for this stream (either flow-size-based or default)
 			streamQuantum := f.getStreamQuantum(id)
+
+			fmt.Printf("[DRR] Stream %d: using quantum=%d, deficit=%d\n", id, streamQuantum, f.deficits[id]) 
 			
 			// Add quantum to deficit for this stream
 			f.deficits[id] += streamQuantum
