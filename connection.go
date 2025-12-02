@@ -2011,3 +2011,9 @@ func (s *connection) NextConnection() Connection {
 	s.streamsMap.UseResetMaps()
 	return s
 }
+
+func (s *connection) SetStreamFlowSize(id protocol.StreamID, flowSize uint64) {
+    if s.framer != nil {
+        s.framer.SetStreamFlowSize(id, flowSize)
+    }
+}
