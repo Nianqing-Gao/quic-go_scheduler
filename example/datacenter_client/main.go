@@ -181,6 +181,13 @@ func runOneFlow(sess quic.Connection, flowID int, size int, class string) error 
     if err != nil {
         return fmt.Errorf("OpenStreamSync: %w", err)
     }
+
+    if drrConn, ok := sess.(interface {
+        SetStreamFlowSize(quic.StreamID, uint64)
+    }); ok {
+        drrConn.SetStreamFlowSize(stream.StreamID(), uint64(size))
+    }
+
     // close stream when done
     defer stream.Close()
     // allocate write buffer
