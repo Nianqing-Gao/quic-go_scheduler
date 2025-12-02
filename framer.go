@@ -85,9 +85,9 @@ func (f *framerI) SetStreamFlowSize(id protocol.StreamID, flowSize uint64) {
 		quantum := f.getQuantumForFlowSize(flowSize)
 		f.streamQuantums[id] = quantum
 		fmt.Printf("[FRAMER] Stream %d: flowSize=%d quantum=%d thresholds=%v\n", 
-			id, flowSize, quantum, f.config.FlowSizeThresholds)  // ADD THIS
+			id, flowSize, quantum, f.config.FlowSizeThresholds)
 	} else {
-		fmt.Printf("[FRAMER] Stream %d: NO thresholds/quantums configured!\n", id)  // ADD THIS
+		fmt.Printf("[FRAMER] Stream %d: NO thresholds/quantums configured!\n", id)
 	}
 }
 
