@@ -40,18 +40,54 @@ func main() {
     classes := make([]string, *nflows)
     shortCount, medCount, longCount := 0, 0, 0
 
+    shortFlowSize  := *shortSize / 2
+    mediumFlowSize := (*shortSize + *longSize) / 2
+    longFlowSize   := *longSize + (*longSize-*shortSize)/2
+
+    // for i := 0; i < *nflows; i++ {
+    //     u := rand.Float64()
+    //     var size int
+    //     if u < *shortFrac {
+    //         // short flows: draw between [minSize, shortSize)
+    //         size = sampleLogUniform(*minSize, max(1, *shortSize-1))
+    //     } else {
+    //         // the rest: draw between [shortSize, maxSize]
+    //         size = sampleLogUniform(*shortSize, *maxSize)
+    //     }
+    //     sizes[i] = size
+    //     // classify based on thresholds
+    //     if size < *shortSize {
+    //         classes[i] = "short"
+    //         shortCount++
+    //     } else if size < *longSize {
+    //         classes[i] = "medium"
+    //         medCount++
+    //     } else {
+    //         classes[i] = "long"
+    //         longCount++
+    //     }
+    // }
+
     for i := 0; i < *nflows; i++ {
         u := rand.Float64()
         var size int
+
         if u < *shortFrac {
-            // short flows: draw between [minSize, shortSize)
-            size = sampleLogUniform(*minSize, max(1, *shortSize-1))
+            // short flows
+            size = shortFlowSize
         } else {
-            // the rest: draw between [shortSize, maxSize]
-            size = sampleLogUniform(*shortSize, *maxSize)
+            // non-short: split 50/50 between medium and long
+            v := rand.Float64()
+            if v < 0.5 {
+                size = mediumFlowSize
+            } else {
+                size = longFlowSize
+            }
         }
+
         sizes[i] = size
-        // classify based on thresholds
+
+        // classify based on thresholds (unchanged logic)
         if size < *shortSize {
             classes[i] = "short"
             shortCount++
@@ -63,6 +99,7 @@ func main() {
             longCount++
         }
     }
+
     _ = shortCount
     _ = medCount
     _ = longCount
