@@ -11,20 +11,27 @@ To test locally (not in the ns-3 framework), first run the host:
 go run ./example/datacenter_server \
     -ip 127.0.0.1:4242 \
     -scheduler=drr \
-    -shortSize=100000 \
-    -longSize=10000000 \
+    -shortSize=1000 \
+    -longSize=100000 \
     -logfile=./scts_local.csv
 ```
 then run the client in another terminal:
 ```bash
 go run ./example/datacenter_client \
     -ip 127.0.0.1:4242 \
-    -nflows=200 \
-    -shortFrac=0.8 \
-    -shortSize=100000 \
-    -longSize=10000000 \
-    -concurrency=10 \
-    -scheduler=drr \
-    -duration=10s
+    -nflows=20 \
+    -shortFrac=0.9 \
+    -shortSize=1000 \
+    -longSize=100000 \
+    -concurrency=3 \
+    -scheduler=drr
 ```
 log info should be printed on the terminal and also in the log file. 
+
+
+go run ./example/datacenter_server -scheduler drr -shortSize 100000 -longSize 10000000 \
+    -quantum0 7200 -quantum1 3600 -quantum2 1200
+
+
+go run ./example/datacenter_client -scheduler drr -nflows 1000 -shortSize 100000 -longSize 10000000 \
+    -quantum0 7200 -quantum1 3600 -quantum2 1200

@@ -39,7 +39,7 @@ type framerI struct {
 	controlFrameMutex sync.Mutex
 	controlFrames  []wire.Frame
 	config         *Config
-	streamMapPrio map[protocol.StreamID]int //To match priorities with the stream ID
+	streamMapPrio map[protocol.StreamID]int // To match priorities with the stream ID
 	auxPriorSlice []int
 	
 	// DRR-specific fields
@@ -52,10 +52,13 @@ type framerI struct {
 var _ framer = &framerI{}
 
 func newFramer(
+
 	streamGetter streamGetter,
 	v protocol.VersionNumber,
 	config *Config,
+
 ) framer {
+
 	quantum := 1200 // Default quantum: ~1 MSS
 	if config.DRRQuantum > 0 {
 		quantum = config.DRRQuantum
@@ -74,7 +77,7 @@ func newFramer(
 	}
 }
 
-// SetStreamFlowSize sets the expected flow size for a stream and assigns appropriate quantum
+// Sets the expected flow size for a stream and assigns appropriate quantum
 func (f *framerI) SetStreamFlowSize(id protocol.StreamID, flowSize uint64) {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
@@ -228,7 +231,9 @@ func (f *framerI) AddActiveStream(id protocol.StreamID) {
 
 }
 
+/* Modified for DRR scheduler */
 func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.ByteCount) ([]ackhandler.Frame, protocol.ByteCount) {
+
 	var length protocol.ByteCount
 	var lastFrame *ackhandler.Frame
 	f.mutex.Lock()
