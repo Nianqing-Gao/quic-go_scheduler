@@ -3,6 +3,7 @@ package main
 import (
     "context"
     "crypto/tls"
+    "encoding/binary"
     "flag"
     "fmt"
     quic "github.com/lucas-clemente/quic-go"
@@ -202,10 +203,20 @@ func runOneStream(sess quic.Connection, flowID int, size int, class string) erro
         return fmt.Errorf("OpenStreamSync: %w", err)
     }
 
+    // Send client start timestamp as first 8 bytes
+    startNano := time.Now().UnixNano()
+    tsBytes := make([]byte, 8)
+    binary.BigEndian.PutUint64(tsBytes, uint64(startNano))
+    
+    if _, err := stream.Write(tsBytes); err != nil {
+        return fmt.Errorf("Write timestamp: %w", err)
+    }
+
+    // Set the flow size (including the 8 bytes for timestamp)
     if drrConn, ok := sess.(interface {
         SetStreamFlowSize(quic.StreamID, uint64)
     }); ok {
-        drrConn.SetStreamFlowSize(stream.StreamID(), uint64(size))
+        drrConn.SetStreamFlowSize(stream.StreamID(), uint64(size+8))
         // fmt.Printf("[CLIENT] Flow %d: SetStreamFlowSize SUCCESS\n", flowID)
     }
     defer stream.Close()
