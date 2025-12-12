@@ -206,9 +206,7 @@ func runOneStream(sess quic.Connection, flowID int, size int, class string) erro
         SetStreamFlowSize(quic.StreamID, uint64)
     }); ok {
         drrConn.SetStreamFlowSize(stream.StreamID(), uint64(size))
-        fmt.Printf("[CLIENT] Flow %d: SetStreamFlowSize SUCCESS\n", flowID)
-    } else {
-        fmt.Printf("[CLIENT] Flow %d: SetStreamFlowSize FAILED - type assertion failed!\n", flowID)
+        // fmt.Printf("[CLIENT] Flow %d: SetStreamFlowSize SUCCESS\n", flowID)
     }
     defer stream.Close()
 
