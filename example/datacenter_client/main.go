@@ -10,15 +10,15 @@ import (
     "math/rand"
     "sync"
     "time"
-    "os"
     "math"
 )
 
 func main() {
 
+    rand.Seed(time.Now().UnixNano())
+
     // flag name, default value, description
     duration := flag.Duration("duration", 0, "optional total run time (e.g. 5m, 300s); 0 = run until all flows finish")
-    keyLogFile := flag.String("keylog", "", "key log file (optional)")
     ip := flag.String("ip", "localhost:4242", "server IP:port")
     nflows := flag.Int("nflows", 1000, "total number of flows (streams)")
     minSize := flag.Int("minSize", 2*1024, "minimum flow size in bytes (default: 2KB)")
@@ -31,82 +31,24 @@ func main() {
     quantum0 := flag.Int("quantum0", 6*1200, "quantum for class 0 (short flows)")
     quantum1 := flag.Int("quantum1", 3*1200, "quantum for class 1 (medium flows)")
     quantum2 := flag.Int("quantum2", 1*1200, "quantum for class 2 (long flows)")
+    dataType := flag.String("dataType", "threePoints", "how synthetic data length is drawn ('threePoints' or 'logUniform')")
     flag.Parse()
 
-    rand.Seed(time.Now().UnixNano())           // for randomizing flow class
-
-    // generate randomized flow size and class
+    // bookeeping for synthetic workflows
     sizes := make([]int, *nflows)
     classes := make([]string, *nflows)
-    shortCount, medCount, longCount := 0, 0, 0
 
-    shortFlowSize  := *shortSize / 2
-    mediumFlowSize := (*shortSize + *longSize) / 2
-    longFlowSize   := *longSize + (*longSize-*shortSize)/2
-
-    // for i := 0; i < *nflows; i++ {
-    //     u := rand.Float64()
-    //     var size int
-    //     if u < *shortFrac {
-    //         // short flows: draw between [minSize, shortSize)
-    //         size = sampleLogUniform(*minSize, max(1, *shortSize-1))
-    //     } else {
-    //         // the rest: draw between [shortSize, maxSize]
-    //         size = sampleLogUniform(*shortSize, *maxSize)
-    //     }
-    //     sizes[i] = size
-    //     // classify based on thresholds
-    //     if size < *shortSize {
-    //         classes[i] = "short"
-    //         shortCount++
-    //     } else if size < *longSize {
-    //         classes[i] = "medium"
-    //         medCount++
-    //     } else {
-    //         classes[i] = "long"
-    //         longCount++
-    //     }
-    // }
-
-    for i := 0; i < *nflows; i++ {
-        u := rand.Float64()
-        var size int
-
-        if u < *shortFrac {
-            // short flows
-            size = shortFlowSize
-        } else {
-            // non-short: split 50/50 between medium and long
-            v := rand.Float64()
-            if v < 0.5 {
-                size = mediumFlowSize
-            } else {
-                size = longFlowSize
-            }
-        }
-
-        sizes[i] = size
-
-        // classify based on thresholds (unchanged logic)
-        if size < *shortSize {
-            classes[i] = "short"
-            shortCount++
-        } else if size < *longSize {
-            classes[i] = "medium"
-            medCount++
-        } else {
-            classes[i] = "long"
-            longCount++
-        }
+    switch *dataType {
+    case "threePoints":
+        sizes, classes = sampleThreePoints(*shortSize, *longSize, *nflows, *shortFrac, sizes, classes)
+    case "logUniform":
+        sizes, classes = sampleLogUniform(*minSize, *maxSize, *shortSize, *longSize, *nflows, *shortFrac, sizes, classes)
+    default:
+        panic("Invalid data type")
     }
 
-    _ = shortCount
-    _ = medCount
-    _ = longCount
-
-    // quic configurations
+    // QUIC configurations
     quicConfig := &quic.Config{
-
         DisablePathMTUDiscovery: true,                      // disable MTU discovery
         TypePrio:                *scheduler,                // 
         FlowSizeThresholds: []int{*shortSize, *longSize},   // length class thresholds
@@ -117,15 +59,6 @@ func main() {
         InsecureSkipVerify: true,                           // client does not verify server cert
         NextProtos:         []string{"dctr-drr"},           // client & server shared protocol
     }
-    // key log file 
-    if *keyLogFile != "" {
-        f, err := os.Create(*keyLogFile)
-        if err != nil {
-            log.Fatalf("keylog create: %v", err)
-        }
-        defer f.Close()
-        tlsConf.KeyLogWriter = f
-    }
 
     if *scheduler == "wfq" || *scheduler == "abs" {
         streamPrio := make([]int, *nflows)
@@ -134,7 +67,7 @@ func main() {
             case "short":
                 streamPrio[i] = 3  // highest
             case "medium":
-                streamPrio[i] = 2
+                streamPrio[i] = 2  // medium
             case "long":
                 streamPrio[i] = 1  // lowest
             }
@@ -147,44 +80,96 @@ func main() {
     if err != nil {
         log.Fatalf("DialAddr error: %v", err)
     }
-    // close session when done
     defer sess.CloseWithError(0, "done")
     log.Printf("[client] connected to %s (scheduler=%s)", *ip, *scheduler)
 
     // limit concurrency with semaphore
-    // only concurrency number of goroutines can use the channel
+    // the number of concurrency is the maximum number of streams allowed in single connection
     sem := make(chan struct{}, *concurrency)
     var wg sync.WaitGroup
 
     startAll := time.Now()
 
-    // start a goroutine for each flow 
+    // one goroutine for each flow 
     for i := 0; i < *nflows; i++ {
         // duration check
         if *duration > 0 && time.Since(startAll) > *duration {
             log.Printf("[client] duration limit hit - not starting flow %d and beyond", i)
             break
         }
-
         wg.Add(1)
         sem <- struct{}{}
         go func(id int, size int, class string) {
-            defer wg.Done()           // mark goroutine as done
-            defer func() { <-sem }()  // release semaphore
-            if err := runOneFlow(sess, id, size, class); err != nil {
+            defer wg.Done()           
+            defer func() { <-sem }()
+            if err := runOneStream(sess, id, size, class); err != nil {
                 log.Printf("[client] flow %d (%s) error: %v", id, class, err)
             }
         }(i, sizes[i], classes[i])
     }
-    // wait for all flows to complete
     wg.Wait()
     log.Printf("[client] all streams completed")
 }
 
-/*
- * helper function for generating synthetic data
- */
-func sampleLogUniform(minSize, maxSize int) int {
+func sampleThreePoints(shortSize int, longSize int, nflows int, shortFrac float64, sizes []int, classes []string) ([]int, []string) {
+    shortFlowSize  := shortSize / 2
+    mediumFlowSize := (shortSize + longSize) / 2
+    longFlowSize   := longSize + (longSize-shortSize)/2
+
+    // sample flow sizes from three fixed points
+    for i := 0; i < nflows; i++ {
+        u := rand.Float64()
+        var size int
+
+        if u < shortFrac {
+            size = shortFlowSize
+        } else {
+            v := rand.Float64()
+            if v < 0.5 {
+                size = mediumFlowSize
+            } else {
+                size = longFlowSize
+            }
+        }
+
+        sizes[i] = size
+        if size < shortSize {
+            classes[i] = "short"
+        } else if size < longSize {
+            classes[i] = "medium"
+        } else {
+            classes[i] = "long"
+        }
+    }
+    return sizes, classes
+}
+
+func sampleLogUniform(minSize int, maxSize int, shortSize int, longSize int, nflows int, shortFrac float64, sizes []int, classes []string) ([]int, []string) {
+
+    for i := 0; i < nflows; i++ {
+        u := rand.Float64()
+        var size int
+        if u < shortFrac {
+            // short flows are draw between [minSize, shortSize)
+            size = sampleHelper(minSize, max(1, shortSize-1))
+        } else {
+            // the rest are draw between [shortSize, maxSize]
+            size = sampleHelper(shortSize, maxSize)
+        }
+
+        sizes[i] = size
+        if size < shortSize {
+            classes[i] = "short"
+        } else if size < longSize {
+            classes[i] = "medium"
+        } else {
+            classes[i] = "long"
+        }
+    }
+    return sizes, classes
+}
+
+func sampleHelper(minSize int, maxSize int) int {
     if minSize <= 0 {
         minSize = 1
     }
@@ -197,9 +182,7 @@ func sampleLogUniform(minSize, maxSize int) int {
     v := logMin + u*(logMax-logMin)
     return int(math.Exp(v))
 }
-/*
- * helper function for generating synthetic data
- */
+
 func max(a, b int) int {
     if a > b {
         return a
@@ -212,8 +195,8 @@ func max(a, b int) int {
  * - size: number of bytes to send
  * - class: short, medium, long
  */
-func runOneFlow(sess quic.Connection, flowID int, size int, class string) error {
-    // open one stream 
+func runOneStream(sess quic.Connection, flowID int, size int, class string) error {
+
     stream, err := sess.OpenStreamSync(context.Background())
     if err != nil {
         return fmt.Errorf("OpenStreamSync: %w", err)
@@ -227,13 +210,10 @@ func runOneFlow(sess quic.Connection, flowID int, size int, class string) error 
     } else {
         fmt.Printf("[CLIENT] Flow %d: SetStreamFlowSize FAILED - type assertion failed!\n", flowID)
     }
-
-    // close stream when done
     defer stream.Close()
-    // allocate write buffer
+
     buf := make([]byte, 32*1024)
     remaining := size
-
     // start := time.Now()
     for remaining > 0 {
         // decide how many bytes to send in this iteration

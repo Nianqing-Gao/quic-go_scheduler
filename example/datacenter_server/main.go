@@ -26,7 +26,7 @@ var (
     csvWriter       *csv.Writer     // pointer to shared writer for all flows
     csvFile         *os.File        // pointer to shared log file for all flows 
     csvMu           sync.Mutex      // mutex to prevent concurrent writes
-    schedulerName       string          // name of scheduler (drr, rr, wfq, drr)
+    schedulerName   string          // name of scheduler (drr, rr, wfq, drr)
     shortThresh     int             // threshold for short flow
     longThresh      int             // threshold for long flow
 )
@@ -65,14 +65,14 @@ func main() {
         csvMu.Unlock()
     }
 
-    // quic configurations
+    // quic configurations 
     quicConfig := &quic.Config{
         AcceptToken:          AcceptToken,
         TypePrio:             *scheduler,
         FlowSizeThresholds:   []int{*shortSize, *longSize},
-        FlowSizeQuantums:   []int{*quantum0, *quantum1, *quantum2},
-        MaxIdleTimeout: 3 * time.Minute, 
-        MaxIncomingStreams:   100000,
+        FlowSizeQuantums:     []int{*quantum0, *quantum1, *quantum2},
+        MaxIdleTimeout:       3 * time.Minute, 
+        MaxIncomingStreams:   100000,    // really just an arbitrary big number
     }
 
     // start a quic listener on ip:port 
@@ -95,7 +95,7 @@ func main() {
 }
 
 /* 
- * handle one connection, each connection carries many bidirectional streams
+ * handle one connection
  */ 
 func handleConnection(conn quic.Connection) {
 
@@ -117,7 +117,6 @@ func handleConnection(conn quic.Connection) {
             handleStream(s)
         }(stream)
     }
-    // wait until all stream-handling goroutines are done for this connection
     wg.Wait()
     conn.CloseWithError(0, "done")
 }
@@ -143,16 +142,24 @@ func handleStream(s quic.Stream) {
     id := s.StreamID()                // unique identifier of stream within a connection 
     buffer := make([]byte, 32*1024)   // buffer holds up to 32 KB of data per read
     var total int64                   // total number of bytes received on this stream
-    start := time.Now()               // timestamp when we start reading
+    var start time.Time
+    var end time.Time
 
-    // read this stream until it's done or an error occurs, count its length
+    // read this stream until it's done
     for {
         n, err := s.Read(buffer)
         if n > 0 {
+            if start.IsZero() {
+                start = time.Now()
+            }
             total += int64(n)
         }
         if err != nil {
             if err == io.EOF {
+                if start.IsZero() {
+                    start = time.Now()
+                }
+                end = time.Now()
                 break
             }
             log.Printf("[server] stream %d read error: %v", id, err)
@@ -160,11 +167,11 @@ func handleStream(s quic.Stream) {
         }
     }
 
-    sct := time.Since(start)          // get stream completion time
-    class := classify(total)          // classify this stream 
+    sctMs := end.Sub(start).Seconds() * 1000.0
+    class := classify(total)          // classify this stream  
 
     log.Printf("[server] stream %d complete: bytes=%d sct_ms=%.2f class=%s",
-        id, total, float64(sct.Milliseconds()), class)
+        id, total, sctMs, class)
 
     // log to csv 
     csvMu.Lock()
@@ -175,7 +182,7 @@ func handleStream(s quic.Stream) {
         strconv.FormatInt(time.Now().UnixMilli(), 10),      // current time in ms
         strconv.FormatInt(int64(id), 10),                   // stream id
         strconv.FormatInt(total, 10),                       // stream length
-        fmt.Sprintf("%.2f", float64(sct.Milliseconds())),   // stream completion time in ms
+        fmt.Sprintf("%.2f", sctMs),                         // stream completion time in ms
         class,                                              // class (length)
         schedulerName,                                      // scheduler name
     }
