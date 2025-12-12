@@ -6,6 +6,7 @@ import (
     "crypto/rsa"
     "crypto/tls"
     "crypto/x509"
+    "encoding/binary"
     "encoding/csv"
     "encoding/pem"
     "flag"
@@ -60,7 +61,7 @@ func main() {
     fi, err := f.Stat()
     if err == nil && fi.Size() == 0 {
         csvMu.Lock()
-        _ = csvWriter.Write([]string{"time_ms", "stream_id", "bytes", "sct_ms", "class", "scheduler"})
+        _ = csvWriter.Write([]string{"time_ms", "stream_id", "bytes", "sct_ms", "e2e_ms", "class", "scheduler"})
         csvWriter.Flush()
         csvMu.Unlock()
     }
@@ -142,17 +143,35 @@ func handleStream(s quic.Stream) {
     id := s.StreamID()                // unique identifier of stream within a connection 
     buffer := make([]byte, 32*1024)   // buffer holds up to 32 KB of data per read
     var total int64                   // total number of bytes received on this stream
-    var start time.Time
-    var end time.Time
+    var start time.Time               // when first byte arrives at server
+    var end time.Time                 // when last byte arrives at server
+    var clientStartTime time.Time     // when client opened the stream
+    var firstRead bool = true         // flag for first read to extract timestamp
 
     // read this stream until it's done
     for {
         n, err := s.Read(buffer)
         if n > 0 {
+            // On first read, extract the client's start timestamp
+            if firstRead {
+                firstRead = false
+                if n >= 8 {
+                    // First 8 bytes contain the client start time in nanoseconds
+                    tsNano := binary.BigEndian.Uint64(buffer[:8])
+                    clientStartTime = time.Unix(0, int64(tsNano))
+                    // Don't count the timestamp bytes in the total
+                    total += int64(n - 8)
+                } else {
+                    log.Printf("[server] stream %d: insufficient bytes for timestamp", id)
+                    total += int64(n)
+                }
+            } else {
+                total += int64(n)
+            }
+            
             if start.IsZero() {
                 start = time.Now()
             }
-            total += int64(n)
         }
         if err != nil {
             if err == io.EOF {
@@ -167,11 +186,12 @@ func handleStream(s quic.Stream) {
         }
     }
 
-    sctMs := end.Sub(start).Seconds() * 1000.0
+    sctMs := end.Sub(start).Seconds() * 1000.0           // server completion time
+    endToEndMs := end.Sub(clientStartTime).Seconds() * 1000.0  // end-to-end time
     class := classify(total)          // classify this stream  
 
-    log.Printf("[server] stream %d complete: bytes=%d sct_ms=%.2f class=%s",
-        id, total, sctMs, class)
+    log.Printf("[server] stream %d complete: bytes=%d sct_ms=%.2f e2e_ms=%.2f class=%s",
+        id, total, sctMs, endToEndMs, class)
 
     // log to csv 
     csvMu.Lock()
@@ -181,8 +201,9 @@ func handleStream(s quic.Stream) {
     row := []string{
         strconv.FormatInt(time.Now().UnixMilli(), 10),      // current time in ms
         strconv.FormatInt(int64(id), 10),                   // stream id
-        strconv.FormatInt(total, 10),                       // stream length
+        strconv.FormatInt(total, 10),                       // stream length (excluding timestamp)
         fmt.Sprintf("%.2f", sctMs),                         // stream completion time in ms
+        fmt.Sprintf("%.2f", endToEndMs),                    // end-to-end time in ms
         class,                                              // class (length)
         schedulerName,                                      // scheduler name
     }
