@@ -330,7 +330,6 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 				length += frameLength
 				lastFrame = frame
 				f.deficits[id] -= int(frameLength)
-				sentSomething = true
 				
 				fmt.Printf("[DRR] Stream %d: sent frame len=%d, deficit now=%d, hasMore=%v\n", 
 					id, frameLength, f.deficits[id], hasMoreData)
