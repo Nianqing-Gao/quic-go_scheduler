@@ -47,6 +47,7 @@ type framerI struct {
 	quantum      int                        // Default quantum value (bytes per round)
 	streamQuantums map[protocol.StreamID]int // Per-stream quantum (for flow-size-based DRR)
 	streamFlowSizes map[protocol.StreamID]uint64 // Expected flow size for each stream
+	drrRoundPosition int // Tracks where we are in the current DRR round
 }
 
 var _ framer = &framerI{}
@@ -74,6 +75,7 @@ func newFramer(
 		quantum:         quantum,
 		streamQuantums:  make(map[protocol.StreamID]int),
 		streamFlowSizes: make(map[protocol.StreamID]uint64),
+		drrRoundPosition: 0,
 	}
 }
 
@@ -158,7 +160,9 @@ func (f *framerI) AddActiveStream(id protocol.StreamID) {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 	if _, ok := f.activeStreams[id]; !ok {
+		f.streamQueue = append(f.streamQueue, id)
 		f.activeStreams[id] = struct{}{}
+
 
 		switch f.config.TypePrio {
 		case "abs"://The stream queue is ordered by StreamPrior priorities slice.
@@ -181,10 +185,7 @@ func (f *framerI) AddActiveStream(id protocol.StreamID) {
 			f.auxPriorSlice = append(f.auxPriorSlice,prior)
 
 			//Absolute priorization: the stream queue is ordered regarding the priorities of the stream (StreamPrio slice) which is also ordered
-			posIni := lenQ
-			f.streamQueue = append(f.streamQueue, id)
-			lenQ = len(f.streamQueue)
-			posIni = lenQ-1
+			posIni := lenQ-1
 			newPrior := f.auxPriorSlice[posIni]
 			var correctPos int //Correct position of the stream/prior regarding the prior
 			for i := lenQ-1; i >= 0 ; i--{
@@ -215,37 +216,24 @@ func (f *framerI) AddActiveStream(id protocol.StreamID) {
 			fmt.Println(f.streamMapPrio)
 
 			//Stream ID is replicated in the streamQueue
-			for m:= 0; m<prior; m++ {
+			for m:= 0; m<prior-1; m++ {
 				f.streamQueue = append(f.streamQueue, id)
 			}
 
 		case "rr": // stream ID has already been added
-			f.streamQueue = append(f.streamQueue, id)
 
-		case "drr": // Deficit Round Robin with queue replication based on quantum
+		case "drr": // Deficit Round Robin - stream ID has been added, initialize deficit to 0
 			if _, ok := f.deficits[id]; !ok {
 				f.deficits[id] = 0
 			}
-			
-			// Hybrid approach: replicate streams in queue based on quantum
-			// This gives high-quantum streams more frequent turns
-			// Similar to WFQ but also uses deficit for fine-grained control
-			streamQuantum := f.getStreamQuantum(id)
-			replicas := streamQuantum / f.quantum  // e.g., 7200/1200 = 6
-			
-			// Add stream to queue 'replicas' times for proportional scheduling
-			for i := 0; i < replicas; i++ {
-				f.streamQueue = append(f.streamQueue, id)
-			}
 
 		default:
-			f.streamQueue = append(f.streamQueue, id)
 		}
 	}
 
 }
 
-/* Modified for DRR scheduler */
+/* Modified for DRR scheduler with round state maintained across packets */
 func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.ByteCount) ([]ackhandler.Frame, protocol.ByteCount) {
 
 	var length protocol.ByteCount
@@ -253,80 +241,137 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 	f.mutex.Lock()
 
 	// DRR implementation with flow-size-based quantum assignment
-	// Streams are replicated in queue based on quantum (handled in AddActiveStream)
 	if f.config.TypePrio == "drr" {
-		// Process streams until packet is full
-		for len(f.streamQueue) > 0 {
+		queueLen := len(f.streamQueue)
+		
+		if queueLen == 0 {
+			f.mutex.Unlock()
+			return frames, length
+		}
+		
+		// Reset round position if it's out of bounds (queue changed)
+		if f.drrRoundPosition >= queueLen {
+			f.drrRoundPosition = 0
+		}
+		
+		streamsProcessed := 0
+		startPosition := f.drrRoundPosition
+		
+		// Continue from where we left off in the previous packet
+		for streamsProcessed < queueLen {
+			// Check if packet is full
 			if protocol.MinStreamFrameSize+length > maxLen {
+				// Packet is full, save position and stop
+				fmt.Printf("[DRR] Packet full at position %d/%d, stopping round\n", f.drrRoundPosition, queueLen)
 				break
 			}
 			
-			id := f.streamQueue[0]
-			f.streamQueue = f.streamQueue[1:]
+			// Get current stream
+			currentIndex := f.drrRoundPosition
+			id := f.streamQueue[currentIndex]
+			
+			// Get the quantum for this stream (either flow-size-based or default)
+			streamQuantum := f.getStreamQuantum(id)
+			
+			// Add quantum to deficit for this stream (only when it's its turn)
+			f.deficits[id] += streamQuantum
+			
+			fmt.Printf("[DRR] Stream %d (pos %d/%d): quantum=%d, deficit=%d->%d\n", 
+				id, currentIndex, queueLen, streamQuantum, f.deficits[id]-streamQuantum, f.deficits[id])
 			
 			// Get the stream
 			str, err := f.streamGetter.GetOrOpenSendStream(id)
 			if str == nil || err != nil {
+				// Stream is done or error, remove it
+				fmt.Printf("[DRR] Stream %d: removed (nil or error)\n", id)
+				f.removeStreamAtIndex(currentIndex)
 				delete(f.activeStreams, id)
 				delete(f.deficits, id)
 				delete(f.streamQuantums, id)
 				delete(f.streamFlowSizes, id)
-				// Clean up all replicas of this stream from queue
-				f.CleanStreamQueueWFQ(id)
+				
+				// Don't increment position since we removed an element
+				queueLen = len(f.streamQueue)
+				if f.drrRoundPosition >= queueLen && queueLen > 0 {
+					f.drrRoundPosition = 0
+				}
+				streamsProcessed++
 				continue
 			}
 			
-			// Get the quantum for this stream
-			streamQuantum := f.getStreamQuantum(id)
+			// Try to send frames while deficit > 0
+			streamHasMoreData := true
+			sentSomething := false
 			
-			// Add quantum to deficit, but cap it to prevent unbounded growth
-			if f.deficits[id] < streamQuantum*5 {  // Cap at 5x quantum
-				f.deficits[id] += streamQuantum
-			}
-			
-			// Try to send frames while deficit > 0 AND packet has room
-			for f.deficits[id] > 0 {
+			for f.deficits[id] > 0 && streamHasMoreData {
 				if protocol.MinStreamFrameSize+length > maxLen {
+					// Packet full, stop processing this stream
 					break
 				}
 				
 				remainingLen := maxLen - length
 				remainingLen += quicvarint.Len(uint64(remainingLen))
 				
-				// Limit by deficit
+				// Limit by deficit - only request as much as we have credit for
 				if int(remainingLen) > f.deficits[id] {
 					remainingLen = protocol.ByteCount(f.deficits[id])
 				}
 				
 				frame, hasMoreData := str.popStreamFrame(remainingLen)
+				streamHasMoreData = hasMoreData
 				
 				if frame == nil {
-					// Stream is flow-controlled or has no data ready
+					// No frame available right now
 					break
 				}
 				
 				frameLength := frame.Length(f.version)
+				
 				frames = append(frames, *frame)
 				length += frameLength
 				lastFrame = frame
 				f.deficits[id] -= int(frameLength)
+				sentSomething = true
+				
+				fmt.Printf("[DRR] Stream %d: sent frame len=%d, deficit now=%d, hasMore=%v\n", 
+					id, frameLength, f.deficits[id], hasMoreData)
 				
 				if !hasMoreData {
-					// Stream has no more data - clean up completely
+					// Stream has no more data, remove it
+					fmt.Printf("[DRR] Stream %d: completed (no more data)\n", id)
+					f.removeStreamAtIndex(currentIndex)
 					delete(f.activeStreams, id)
 					delete(f.deficits, id)
 					delete(f.streamQuantums, id)
 					delete(f.streamFlowSizes, id)
-					// Remove ALL replicas of this stream from queue
-					f.CleanStreamQueueWFQ(id)
+					
+					// Don't increment position since we removed an element
+					queueLen = len(f.streamQueue)
+					if f.drrRoundPosition >= queueLen && queueLen > 0 {
+						f.drrRoundPosition = 0
+					}
+					streamsProcessed++
+					streamHasMoreData = false
 					break
 				}
 			}
 			
-			// If stream still has data, put this replica back in queue
-			// (Other replicas are already in queue from AddActiveStream)
+			// If stream still has data and wasn't removed, move to next position
 			if _, stillActive := f.activeStreams[id]; stillActive {
-				f.streamQueue = append(f.streamQueue, id)
+				// Move to next stream
+				f.drrRoundPosition++
+				if f.drrRoundPosition >= len(f.streamQueue) {
+					// Completed a full round, wrap around
+					f.drrRoundPosition = 0
+					fmt.Printf("[DRR] Completed round, wrapping to position 0\n")
+				}
+				streamsProcessed++
+			}
+			
+			// Safety check: if we've looped back to start, we've done a full round
+			if streamsProcessed > 0 && f.drrRoundPosition == startPosition {
+				fmt.Printf("[DRR] Completed full round back to start position\n")
+				break
 			}
 		}
 		
@@ -407,9 +452,18 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 	return frames, length
 }
 
+// Helper function to remove stream at specific index
+func (f *framerI) removeStreamAtIndex(index int) {
+	if index < 0 || index >= len(f.streamQueue) {
+		return
+	}
+	f.streamQueue = append(f.streamQueue[:index], f.streamQueue[index+1:]...)
+}
+
 func (f *framerI) CleanStreamQueueWFQ(id protocol.StreamID){
-	if f.config.TypePrio == "wfq" || f.config.TypePrio == "drr" {
+	if f.config.TypePrio == "wfq"{
 		for i := len(f.streamQueue)-1; i >= 0; i-- {
+			fmt.Println(">>>", f.streamQueue, i)
 			if f.streamQueue[i] == id {
 				if i == len(f.streamQueue)-1 {
 					f.streamQueue = f.streamQueue[:i]
@@ -440,6 +494,9 @@ func (f *framerI) Handle0RTTRejection() error {
 	for id := range f.streamFlowSizes {
 		delete(f.streamFlowSizes, id)
 	}
+	// Reset round position
+	f.drrRoundPosition = 0
+	
 	var j int
 	for i, frame := range f.controlFrames {
 		switch frame.(type) {
