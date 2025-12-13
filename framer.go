@@ -158,9 +158,7 @@ func (f *framerI) AddActiveStream(id protocol.StreamID) {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
 	if _, ok := f.activeStreams[id]; !ok {
-		f.streamQueue = append(f.streamQueue, id)
 		f.activeStreams[id] = struct{}{}
-
 
 		switch f.config.TypePrio {
 		case "abs"://The stream queue is ordered by StreamPrior priorities slice.
@@ -183,7 +181,10 @@ func (f *framerI) AddActiveStream(id protocol.StreamID) {
 			f.auxPriorSlice = append(f.auxPriorSlice,prior)
 
 			//Absolute priorization: the stream queue is ordered regarding the priorities of the stream (StreamPrio slice) which is also ordered
-			posIni := lenQ-1
+			posIni := lenQ
+			f.streamQueue = append(f.streamQueue, id)
+			lenQ = len(f.streamQueue)
+			posIni = lenQ-1
 			newPrior := f.auxPriorSlice[posIni]
 			var correctPos int //Correct position of the stream/prior regarding the prior
 			for i := lenQ-1; i >= 0 ; i--{
@@ -214,18 +215,31 @@ func (f *framerI) AddActiveStream(id protocol.StreamID) {
 			fmt.Println(f.streamMapPrio)
 
 			//Stream ID is replicated in the streamQueue
-			for m:= 0; m<prior-1; m++ {
+			for m:= 0; m<prior; m++ {
 				f.streamQueue = append(f.streamQueue, id)
 			}
 
 		case "rr": // stream ID has already been added
+			f.streamQueue = append(f.streamQueue, id)
 
-		case "drr": // Deficit Round Robin - stream ID has been added, initialize deficit to 0
+		case "drr": // Deficit Round Robin with queue replication based on quantum
 			if _, ok := f.deficits[id]; !ok {
 				f.deficits[id] = 0
 			}
+			
+			// Hybrid approach: replicate streams in queue based on quantum
+			// This gives high-quantum streams more frequent turns
+			// Similar to WFQ but also uses deficit for fine-grained control
+			streamQuantum := f.getStreamQuantum(id)
+			replicas := streamQuantum / f.quantum  // e.g., 7200/1200 = 6
+			
+			// Add stream to queue 'replicas' times for proportional scheduling
+			for i := 0; i < replicas; i++ {
+				f.streamQueue = append(f.streamQueue, id)
+			}
 
 		default:
+			f.streamQueue = append(f.streamQueue, id)
 		}
 	}
 
@@ -239,26 +253,16 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 	f.mutex.Lock()
 
 	// DRR implementation with flow-size-based quantum assignment
+	// Streams are replicated in queue based on quantum (handled in AddActiveStream)
 	if f.config.TypePrio == "drr" {
-		numActiveStreams := len(f.streamQueue)
-		processedStreams := 0
-		
-		for processedStreams < numActiveStreams {
-			if protocol.MinStreamFrameSize+length > maxLen || len(f.streamQueue) == 0 {
+		// Process streams until packet is full
+		for len(f.streamQueue) > 0 {
+			if protocol.MinStreamFrameSize+length > maxLen {
 				break
 			}
 			
 			id := f.streamQueue[0]
 			f.streamQueue = f.streamQueue[1:]
-			processedStreams++
-			
-			// Get the quantum for this stream (either flow-size-based or default)
-			streamQuantum := f.getStreamQuantum(id)
-
-			fmt.Printf("[DRR] Stream %d: using quantum=%d, deficit=%d\n", id, streamQuantum, f.deficits[id]) 
-			
-			// Add quantum to deficit for this stream
-			f.deficits[id] += streamQuantum
 			
 			// Get the stream
 			str, err := f.streamGetter.GetOrOpenSendStream(id)
@@ -267,11 +271,20 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 				delete(f.deficits, id)
 				delete(f.streamQuantums, id)
 				delete(f.streamFlowSizes, id)
+				// Clean up all replicas of this stream from queue
+				f.CleanStreamQueueWFQ(id)
 				continue
 			}
 			
-			// Try to send frames while deficit > 0
-			sentInThisRound := false
+			// Get the quantum for this stream
+			streamQuantum := f.getStreamQuantum(id)
+			
+			// Add quantum to deficit, but cap it to prevent unbounded growth
+			if f.deficits[id] < streamQuantum*5 {  // Cap at 5x quantum
+				f.deficits[id] += streamQuantum
+			}
+			
+			// Try to send frames while deficit > 0 AND packet has room
 			for f.deficits[id] > 0 {
 				if protocol.MinStreamFrameSize+length > maxLen {
 					break
@@ -280,7 +293,7 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 				remainingLen := maxLen - length
 				remainingLen += quicvarint.Len(uint64(remainingLen))
 				
-				// Limit by deficit - only request as much as we have credit for
+				// Limit by deficit
 				if int(remainingLen) > f.deficits[id] {
 					remainingLen = protocol.ByteCount(f.deficits[id])
 				}
@@ -288,32 +301,30 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 				frame, hasMoreData := str.popStreamFrame(remainingLen)
 				
 				if frame == nil {
+					// Stream is flow-controlled or has no data ready
 					break
 				}
 				
 				frameLength := frame.Length(f.version)
-				
 				frames = append(frames, *frame)
 				length += frameLength
 				lastFrame = frame
 				f.deficits[id] -= int(frameLength)
-				sentInThisRound = true
 				
 				if !hasMoreData {
-					// Stream has no more data
+					// Stream has no more data - clean up completely
 					delete(f.activeStreams, id)
 					delete(f.deficits, id)
 					delete(f.streamQuantums, id)
 					delete(f.streamFlowSizes, id)
+					// Remove ALL replicas of this stream from queue
+					f.CleanStreamQueueWFQ(id)
 					break
 				}
 			}
-
-			if !sentInThisRound && f.deficits[id] > 0 {
-			    f.deficits[id] -= streamQuantum
-			}
 			
-			// If stream still has data, put it back in queue
+			// If stream still has data, put this replica back in queue
+			// (Other replicas are already in queue from AddActiveStream)
 			if _, stillActive := f.activeStreams[id]; stillActive {
 				f.streamQueue = append(f.streamQueue, id)
 			}
@@ -397,9 +408,8 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 }
 
 func (f *framerI) CleanStreamQueueWFQ(id protocol.StreamID){
-	if f.config.TypePrio == "wfq"{
+	if f.config.TypePrio == "wfq" || f.config.TypePrio == "drr" {
 		for i := len(f.streamQueue)-1; i >= 0; i-- {
-			fmt.Println(">>>", f.streamQueue, i)
 			if f.streamQueue[i] == id {
 				if i == len(f.streamQueue)-1 {
 					f.streamQueue = f.streamQueue[:i]
