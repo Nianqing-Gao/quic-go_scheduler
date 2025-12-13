@@ -255,7 +255,7 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 			// Get the quantum for this stream (either flow-size-based or default)
 			streamQuantum := f.getStreamQuantum(id)
 
-			// fmt.Printf("[DRR] Stream %d: using quantum=%d, deficit=%d\n", id, streamQuantum, f.deficits[id]) 
+			fmt.Printf("[DRR] Stream %d: using quantum=%d, deficit=%d\n", id, streamQuantum, f.deficits[id]) 
 			
 			// Add quantum to deficit for this stream
 			f.deficits[id] += streamQuantum
