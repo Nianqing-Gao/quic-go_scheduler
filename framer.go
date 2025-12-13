@@ -301,7 +301,6 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 			
 			// Try to send frames while deficit > 0
 			streamHasMoreData := true
-			sentSomething := false
 			
 			for f.deficits[id] > 0 && streamHasMoreData {
 				if protocol.MinStreamFrameSize+length > maxLen {
