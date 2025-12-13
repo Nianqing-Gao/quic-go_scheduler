@@ -271,7 +271,7 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 			}
 			
 			// Try to send frames while deficit > 0
-			// sentInThisRound := false
+			sentInThisRound := false
 			for f.deficits[id] > 0 {
 				if protocol.MinStreamFrameSize+length > maxLen {
 					break
@@ -297,7 +297,7 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 				length += frameLength
 				lastFrame = frame
 				f.deficits[id] -= int(frameLength)
-				// sentInThisRound = true
+				sentInThisRound = true
 				
 				if !hasMoreData {
 					// Stream has no more data
@@ -307,6 +307,10 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 					delete(f.streamFlowSizes, id)
 					break
 				}
+			}
+
+			if !sentInThisRound && f.deficits[id] > 0 {
+			    f.deficits[id] -= streamQuantum
 			}
 			
 			// If stream still has data, put it back in queue
