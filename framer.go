@@ -276,6 +276,7 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 			// Send frames while we have deficit and room in packet
 			sentAnyData := false
 			streamFinished := false
+			streamHasNoDataReady := false
 			
 			for f.deficits[id] > 0 && protocol.MinStreamFrameSize+length <= maxLen {
 				// Check if deficit is large enough to send a valid frame
@@ -297,7 +298,15 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 				frame, hasMoreData := str.popStreamFrame(remainingLen)
 				
 				if frame == nil {
-					// No more frames available right now
+					// No frame available - check if stream is finished
+					if !hasMoreData {
+						streamFinished = true
+						fmt.Printf("[DRR] Stream %d: finished (no more data)\n", id)
+					} else {
+						// Stream has data but none ready right now (waiting)
+						streamHasNoDataReady = true
+						fmt.Printf("[DRR] Stream %d: no data ready right now\n", id)
+					}
 					break
 				}
 				
@@ -323,33 +332,19 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 				delete(f.deficits, id)
 				delete(f.streamQuantums, id)
 				delete(f.streamFlowSizes, id)
-				fmt.Printf("[DRR] Stream %d: finished, removed from queue\n", id)
+				fmt.Printf("[DRR] Stream %d: removed from queue\n", id)
 			} else if _, stillActive := f.activeStreams[id]; stillActive {
-				// Check if stream is done when it couldn't send anything
-				if !sentAnyData {
-					// Stream couldn't send - check if it's actually finished
-					testFrame, testHasMore := str.popStreamFrame(protocol.MinStreamFrameSize)
-					if testFrame == nil && !testHasMore {
-						// Stream is done, remove it
-						f.streamQueue = f.streamQueue[1:]
-						delete(f.activeStreams, id)
-						delete(f.deficits, id)
-						delete(f.streamQuantums, id)
-						delete(f.streamFlowSizes, id)
-						fmt.Printf("[DRR] Stream %d: no data remaining, removed from queue\n", id)
-						if protocol.MinStreamFrameSize+length > maxLen {
-							break
-						}
-						continue
-					}
-					// Stream has more data but couldn't send (waiting) - move to back
-					f.streamQueue = append(f.streamQueue[1:], id)
-					fmt.Printf("[DRR] Stream %d: no frames ready, moving to back with deficit=%d\n", id, f.deficits[id])
-					continue
-				}
-				
-				// Stream sent some data
-				if protocol.MinStreamFrameSize+length > maxLen && f.deficits[id] > 0 {
+				// Stream is still active
+				if streamHasNoDataReady {
+					// Stream has no data ready - remove from active queue entirely
+					// It will re-add itself via AddActiveStream() when it has data
+					f.streamQueue = f.streamQueue[1:]
+					delete(f.activeStreams, id)
+					delete(f.deficits, id)
+					delete(f.streamQuantums, id)
+					delete(f.streamFlowSizes, id)
+					fmt.Printf("[DRR] Stream %d: no data ready, removing from active queue\n", id)
+				} else if protocol.MinStreamFrameSize+length > maxLen && f.deficits[id] > 0 {
 					// Packet is full AND stream still has remaining deficit
 					// Keep stream at front to continue in next call
 					fmt.Printf("[DRR] Stream %d: packet full, keeping at front with deficit=%d\n", id, f.deficits[id])
