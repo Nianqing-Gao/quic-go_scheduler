@@ -288,8 +288,6 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 		
 		// If no current stream, select the next one
 		if f.currentStreamID == 0 {
-			// Find next stream with data
-			startPosition := f.drrRoundPosition
 			streamsChecked := 0
 			
 			for streamsChecked < len(f.streamQueue) {
