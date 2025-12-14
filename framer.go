@@ -274,7 +274,7 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 			}
 			
 			// Send frames while we have deficit and room in packet
-			sentAnyData := false
+			// sentAnyData := false
 			streamFinished := false
 			streamHasNoDataReady := false
 			
@@ -315,7 +315,7 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 				length += frameLength
 				lastFrame = frame
 				f.deficits[id] -= int(frameLength)
-				sentAnyData = true
+				// sentAnyData = true
 				
 				if !hasMoreData {
 					// Stream has finished, mark for removal
