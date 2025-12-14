@@ -50,7 +50,7 @@ func main() {
 
     // QUIC configurations
     quicConfig := &quic.Config{
-        //DisablePathMTUDiscovery: true,                      // disable MTU discovery
+        DisablePathMTUDiscovery: true,                      // disable MTU discovery
         TypePrio:                *scheduler,                // 
         FlowSizeThresholds: []int{*shortSize, *longSize},   // length class thresholds
         FlowSizeQuantums:   []int{*quantum0, *quantum1, *quantum2},  // quantum each class gets per round
