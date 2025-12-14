@@ -280,8 +280,9 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 			for f.deficits[id] > 0 && protocol.MinStreamFrameSize+length <= maxLen {
 				// Check if deficit is large enough to send a valid frame
 				if f.deficits[id] < int(protocol.MinStreamFrameSize) {
-					// Deficit too small for a valid frame, move stream to back
-					fmt.Printf("[DRR] Stream %d: deficit=%d too small for MinStreamFrameSize, moving to back\n", id, f.deficits[id])
+					// Deficit too small for a valid frame, reset to 0 so it gets fresh quantum next time
+					fmt.Printf("[DRR] Stream %d: deficit=%d too small for MinStreamFrameSize, resetting to 0\n", id, f.deficits[id])
+					f.deficits[id] = 0
 					break
 				}
 				
