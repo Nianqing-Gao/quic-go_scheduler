@@ -317,15 +317,19 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 				delete(f.streamFlowSizes, id)
 			} else if _, stillActive := f.activeStreams[id]; stillActive {
 				// Stream is still active
-				if protocol.MinStreamFrameSize+length > maxLen {
-					// Packet is full - keep stream at front with its remaining deficit
-					// Next call will continue from this stream
+				if protocol.MinStreamFrameSize+length > maxLen && f.deficits[id] > 0 {
+					// Packet is full AND stream still has remaining deficit
+					// Keep stream at front to continue in next call
 					fmt.Printf("[DRR] Stream %d: packet full, keeping at front with deficit=%d\n", id, f.deficits[id])
 					break
 				} else if f.deficits[id] <= 0 || !sentAnyData {
 					// Stream used up its deficit or couldn't send - move to back
 					f.streamQueue = append(f.streamQueue[1:], id)
 					fmt.Printf("[DRR] Stream %d: moving to back, deficit=%d\n", id, f.deficits[id])
+					// If packet is full, stop processing (moved stream to back, continue with next)
+					if protocol.MinStreamFrameSize+length > maxLen {
+						break
+					}
 				} else {
 					// Stream still has deficit but couldn't send more frames
 					// (maybe waiting for more data) - move to back
