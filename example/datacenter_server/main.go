@@ -72,7 +72,7 @@ func main() {
         TypePrio:             *scheduler,
         FlowSizeThresholds:   []int{*shortSize, *longSize},
         FlowSizeQuantums:     []int{*quantum0, *quantum1, *quantum2},
-        MaxIdleTimeout:       3 * time.Minute, 
+        MaxIdleTimeout:       30 * time.Minute, 
         MaxIncomingStreams:   100000,    // really just an arbitrary big number
     }
 
