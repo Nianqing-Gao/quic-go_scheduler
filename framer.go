@@ -278,6 +278,13 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 			streamFinished := false
 			
 			for f.deficits[id] > 0 && protocol.MinStreamFrameSize+length <= maxLen {
+				// Check if deficit is large enough to send a valid frame
+				if f.deficits[id] < int(protocol.MinStreamFrameSize) {
+					// Deficit too small for a valid frame, move stream to back
+					fmt.Printf("[DRR] Stream %d: deficit=%d too small for MinStreamFrameSize, moving to back\n", id, f.deficits[id])
+					break
+				}
+				
 				remainingLen := maxLen - length
 				remainingLen += quicvarint.Len(uint64(remainingLen))
 				
@@ -315,26 +322,45 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 				delete(f.deficits, id)
 				delete(f.streamQuantums, id)
 				delete(f.streamFlowSizes, id)
+				fmt.Printf("[DRR] Stream %d: finished, removed from queue\n", id)
 			} else if _, stillActive := f.activeStreams[id]; stillActive {
-				// Stream is still active
+				// Check if stream is done when it couldn't send anything
+				if !sentAnyData {
+					// Stream couldn't send - check if it's actually finished
+					testFrame, testHasMore := str.popStreamFrame(protocol.MinStreamFrameSize)
+					if testFrame == nil && !testHasMore {
+						// Stream is done, remove it
+						f.streamQueue = f.streamQueue[1:]
+						delete(f.activeStreams, id)
+						delete(f.deficits, id)
+						delete(f.streamQuantums, id)
+						delete(f.streamFlowSizes, id)
+						fmt.Printf("[DRR] Stream %d: no data remaining, removed from queue\n", id)
+						if protocol.MinStreamFrameSize+length > maxLen {
+							break
+						}
+						continue
+					}
+					// Stream has more data but couldn't send (waiting) - move to back
+					f.streamQueue = append(f.streamQueue[1:], id)
+					fmt.Printf("[DRR] Stream %d: no frames ready, moving to back with deficit=%d\n", id, f.deficits[id])
+					continue
+				}
+				
+				// Stream sent some data
 				if protocol.MinStreamFrameSize+length > maxLen && f.deficits[id] > 0 {
 					// Packet is full AND stream still has remaining deficit
 					// Keep stream at front to continue in next call
 					fmt.Printf("[DRR] Stream %d: packet full, keeping at front with deficit=%d\n", id, f.deficits[id])
 					break
-				} else if f.deficits[id] <= 0 || !sentAnyData {
-					// Stream used up its deficit or couldn't send - move to back
+				} else {
+					// Stream used up deficit or packet not full - move to back
 					f.streamQueue = append(f.streamQueue[1:], id)
 					fmt.Printf("[DRR] Stream %d: moving to back, deficit=%d\n", id, f.deficits[id])
-					// If packet is full, stop processing (moved stream to back, continue with next)
+					// If packet is full, stop processing
 					if protocol.MinStreamFrameSize+length > maxLen {
 						break
 					}
-				} else {
-					// Stream still has deficit but couldn't send more frames
-					// (maybe waiting for more data) - move to back
-					f.streamQueue = append(f.streamQueue[1:], id)
-					fmt.Printf("[DRR] Stream %d: no more frames ready, moving to back with deficit=%d\n", id, f.deficits[id])
 				}
 			}
 		}
