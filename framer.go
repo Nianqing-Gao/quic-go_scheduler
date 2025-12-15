@@ -231,7 +231,6 @@ func (f *framerI) AddActiveStream(id protocol.StreamID) {
 
 }
 
-/* Modified for DRR scheduler */
 func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.ByteCount) ([]ackhandler.Frame, protocol.ByteCount) {
 
 	var length protocol.ByteCount
@@ -239,7 +238,6 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 	f.mutex.Lock()
 
 	// DRR implementation with flow-size-based quantum assignment
-	// Modified to: 1) not round-robin through all streams, 2) remember deficit across calls
 	if f.config.TypePrio == "drr" {
 		for len(f.streamQueue) > 0 {
 			// Check if packet is full before processing next stream
@@ -249,16 +247,16 @@ func (f *framerI) AppendStreamFrames(frames []ackhandler.Frame, maxLen protocol.
 			
 			id := f.streamQueue[0]
 			
-			// Get the quantum for this stream (either flow-size-based or default)
+			// Get the quantum for this stream
 			streamQuantum := f.getStreamQuantum(id)
 			
 			// Only add quantum if deficit <= 0 (stream needs new credit)
 			// This ensures deficit persists across calls
 			if f.deficits[id] <= 0 {
 				f.deficits[id] += streamQuantum
-				fmt.Printf("[DRR] Stream %d: added quantum=%d, new deficit=%d\n", id, streamQuantum, f.deficits[id])
+				// fmt.Printf("[DRR] Stream %d: added quantum=%d, new deficit=%d\n", id, streamQuantum, f.deficits[id])
 			} else {
-				fmt.Printf("[DRR] Stream %d: continuing with existing deficit=%d\n", id, f.deficits[id])
+				// fmt.Printf("[DRR] Stream %d: continuing with existing deficit=%d\n", id, f.deficits[id])
 			}
 			
 			// Get the stream
